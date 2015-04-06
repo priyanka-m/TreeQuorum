@@ -1,13 +1,13 @@
-import java.io.IOException;
 import java.io.ObjectOutputStream;
-import java.net.ConnectException;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.Random;
 
-/**
- * Created by priyanka on 3/25/15.
+/** This class represents the client, that wants to enter the CS
+ * @author Priyanka Menghani
+ * @version 1.0
  */
 public class TreeQuorumClient {
   static int nodeId;
@@ -16,76 +16,111 @@ public class TreeQuorumClient {
   static int msgsCurrCS = 0;
   static int messagesSent = 0;
   static int messagesRecvd = 0;
-  static int oneTimeUnit = 100;
+  static int oneTimeUnit;
   static int our_sequence_number;
   static final int numServers = 7;
   static volatile boolean quorumFormed;
   static int critical_section_limit = 20;
-  static int highest_sequence_number = 0;
-  static volatile int completionReports = 0;
+  static volatile int highest_sequence_number = 0;
   static int maxNodesAtServer = 7;
-  static int serverRootId = 1;
+  static volatile boolean criticalSectionActivated = false;
   static boolean requesting_critical_section = false;
-  static ArrayList<Boolean> locksReceived = new ArrayList<Boolean>(maxNodesAtServer);
-  static ArrayList<Integer> failsReceived = new ArrayList<Integer>();
-  static ArrayList<Integer> deferredInquiries = new ArrayList<Integer>();
-  static ArrayList<Integer> serverAddresses = new ArrayList<Integer>(numServers);
+  static volatile ArrayList<Boolean> locksReceived = new ArrayList<Boolean>(Collections.nCopies(maxNodesAtServer+1,false));
+  static ArrayList<String> serverAddresses = new ArrayList<String>(numServers + 1);
 
+  /**
+   * This method populates the list of server addresses.
+   */
   public static void populateServerAddresses() {
-    serverAddresses.add(1, 3231);
-    serverAddresses.add(2, 3232);
-    serverAddresses.add(3, 3233);
-    serverAddresses.add(4, 3234);
-    serverAddresses.add(5, 3235);
-    serverAddresses.add(6, 3236);
-    serverAddresses.add(7, 3237);
+    serverAddresses.add(0,"");
+    serverAddresses.add(1, "dc31.utdallas.edu");
+    serverAddresses.add(2, "dc32.utdallas.edu");
+    serverAddresses.add(3, "dc33.utdallas.edu");
+    serverAddresses.add(4, "dc34.utdallas.edu");
+    serverAddresses.add(5, "dc35.utdallas.edu");
+    serverAddresses.add(6, "dc36.utdallas.edu");
+    serverAddresses.add(7, "dc37.utdallas.edu");
   }
 
-  /*  This is called when the critical section is activated.
-  * */
+  /** Critical section activated.
+   * In a CS, a node sleeps for 3 units of time before exiting.
+  */
   public static void criticalSectionActivated() {
-    Date now = new Date();
-    System.out.println("Entering CS.....");
-    System.out.println(nodeId + " " + System.currentTimeMillis());
+    criticalSectionActivated = true;
     try {
       Thread.sleep(3 * oneTimeUnit);
     } catch (Exception e) {
       e.printStackTrace();
     }
+    criticalSectionActivated = false;
   }
 
-  public static void clientCall(Integer ipAddress, String callType, int serverID, int seqNum, int csCnt) {
-    try
-    {
-      //Socket client = new Socket(ipAddress, port);
-      Socket client = new Socket("localhost", serverAddresses.get(serverID));
-      ObjectOutputStream outToServer = new ObjectOutputStream(client.getOutputStream());
-      outToServer.writeObject(new Message(callType, nodeId, serverID, seqNum, csCnt));
+  /**
+   * Send completion message to the root server(s1)
+   */
+  public static void sendCompletionReport() {
+    clientCall(serverAddresses.get(0), "COMPLETION", 0, our_sequence_number, csCount);
+  }
 
-      messagesSent += 1;
-      msgsCurrCS += 1;
+  /**
+   * Connect to the server at 'ipAddress' and send a request of type 'callType'
+   * @param ipAddress IP address of the server
+   * @param callType Type of message being sent, i.e REQUEST or RELEASE
+   * @param serverID ID of the server
+   * @param seqNum The current sequence number(timestamp)
+   * @param csCnt The current Critical Section Count(1-40)
+   */
+  public static void clientCall(String ipAddress, String callType, int serverID, int seqNum, int csCnt) {
+    try {
+      Socket client = new Socket(ipAddress, port);
+      try
+      {
+        ObjectOutputStream outToServer = new ObjectOutputStream(client.getOutputStream());
+        outToServer.writeObject(new Message(callType, nodeId, serverID, seqNum, csCnt));
+        client.close();
 
-      client.close();
+      } catch (Exception c) {
+        client.close();
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
 
-    } catch (ConnectException c) {
-      c.printStackTrace();
-    } catch(IOException e) {
+  }
+
+  /**
+   * Release the lock on servers
+   */
+  public static void relinquishCS() {
+    try {
+      for (int i = 1; i < serverAddresses.size(); i++) {
+        messagesSent += 1;
+        msgsCurrCS += 1;
+        clientCall(serverAddresses.get(i), "RELEASE", i, 0, 0);
+      }
+    } catch (Exception e) {
       e.printStackTrace();
     }
   }
 
-  /*  This function requests all the nodes in the system, for entry into its critical section.
-      Only those nodes are sent a request who currently have the token with them
-  * */
+  /**
+   * Send requests to all the servers for entry into CS
+   */
   public static void requestCS() {
     try {
-      for (int i = 0; i < serverAddresses.size(); i++) {
+      for (int i = 1; i < serverAddresses.size(); i++) {
+        messagesSent += 1;
+        msgsCurrCS += 1;
         clientCall(serverAddresses.get(i), "REQUEST", i, our_sequence_number, csCount);
       }
     } catch (Exception e) {
       e.printStackTrace();
     }
   }
+
+  /**
+   * The list of steps to be executed, before entry and after exit from the CS
+   */
   public static void stepsForCS() {
     int START = 5, END = 10;
     Random random = new Random();
@@ -103,21 +138,24 @@ public class TreeQuorumClient {
     // We need to keep a record of the elapsed time.
     long currTime = System.nanoTime();
 
-    // Call this function to send request to all (numNodes - 1) nodes in the system.
+    // Call this function to send request to all servers in the system.
     requestCS();
 
-    // Wait until you have received a reply from everyone.
-    while (!(quorumFormed)) {}
+    // Wait until you have received a reply from a particular quorum.
+    while (!quorumFormed) {}
 
     long currTime2 = System.nanoTime();
 
-    System.out.println("Time elapsed while making requests for CS: " + ((currTime2 - currTime)/1000000) + " milisecond(s)");
+    System.out.print(" latency: " + ((currTime2 - currTime) / 1000000) + " milisecond(s)");
 
     // When in CS, execute these steps.
     criticalSectionActivated();
 
-    // You no longer need this privilege
+    // Release the lock on the servers
+    relinquishCS();
+
     requesting_critical_section = false;
+
   }
 
   // Generates a random number between the range [aStart, aEnd]
@@ -132,48 +170,67 @@ public class TreeQuorumClient {
     return  (int)(fraction + aStart);
   }
 
-
-
   public static void main(String[] args) {
     nodeId = Integer.parseInt(args[0]);
     port = Integer.parseInt(args[1]);
+    oneTimeUnit = Integer.parseInt(args[2]);
 
-    // Phase: 1
-    csCount = 1;
-    while (csCount <= critical_section_limit) {
-      System.out.println("~~~~~~~~~~~~~~~~NODE: " + nodeId  + " CRITICAL SECTION NUMBER: " + csCount + "~~~~~~~~~~~~~~~~");
-      // Keep count of messages exchanged for executing the CS.
-      msgsCurrCS = 0;
-      stepsForCS();
-      System.out.println("Messages Exchanged: " + msgsCurrCS);
-      csCount++;
-      locksReceived.clear();
-      failsReceived.clear();
-    }
+    // Populate the server addresses in a list
+    populateServerAddresses();
 
-    // Phase: 2
-    csCount = 21;
-    while (csCount - 20 <= critical_section_limit) {
-      System.out.println("~~~~~~~~~~~~~~~~NODE: " + nodeId  + " CRITICAL SECTION NUMBER: " + csCount + "~~~~~~~~~~~~~~~~");
-      // Keep count of messages exchanged for executing the CS.
-      msgsCurrCS = 0;
-      stepsForCS();
-      System.out.println("Messages Exchanged: " + msgsCurrCS);
-      csCount++;
-      locksReceived.clear();
-      failsReceived.clear();
-      deferredInquiries.clear();
-      if (nodeId % 2 == 0) {
-        // wait for a random unit of time between the range [45-50]
-        Random random = new Random();
-        try {
-          Thread.sleep(generateRandomNumber(45, 50, random));
-        } catch (Exception e) {
-          e.printStackTrace();
-        }
+    try {
+      // Start the message receiver thread
+      TreeQuorumClientMessageReceiver tqcmr = new TreeQuorumClientMessageReceiver(port);
+      tqcmr.start();
 
+      System.out.println("Wait time = [5, 10] units and time in CS = 3 units");
+      // Phase: 1
+      csCount = 1;
+      while (csCount <= critical_section_limit) {
+        System.out.print("request: " + csCount);
+        msgsCurrCS = 0;
+        stepsForCS();
+        System.out.println(" Messages Exchanged: " + msgsCurrCS);
+        csCount++;
+        // Clear all the locks
+        locksReceived.clear();
+        locksReceived.addAll(Collections.nCopies(8,false));
       }
-    }
 
+      // Phase: 2
+      csCount = 21;
+      while (csCount - 20 <= critical_section_limit) {
+        System.out.print("request: " + csCount);
+        // Keep count of messages exchanged for executing the CS.
+        msgsCurrCS = 0;
+        stepsForCS();
+        System.out.println(" Messages Exchanged: " + msgsCurrCS);
+        csCount++;
+        locksReceived.clear();
+        locksReceived.addAll(Collections.nCopies(8,false));
+        if (nodeId % 2 == 0) {
+          // wait for a random unit of time between the range [45-50]
+          Random random = new Random();
+          try {
+            Thread.sleep(generateRandomNumber(45, 50, random)*oneTimeUnit);
+          } catch (Exception e) {
+            e.printStackTrace();
+          }
+
+        }
+      }
+
+      Date dt = new Date();
+      System.out.println("finished at " + dt.toString());
+
+      // Send a report to S1 for CS execution completion
+      sendCompletionReport();
+
+      // Close the message receiver thread
+      tqcmr.closeServer();
+
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
   }
 }

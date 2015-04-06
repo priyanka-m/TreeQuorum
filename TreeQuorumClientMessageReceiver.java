@@ -6,10 +6,10 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 
 /**
- * Created by priyanka on 3/26/15.
+ * @author Priyanka Menghani
+ * @version 1.0
  */
-public class TreeQuorumClientMessageReceiver {
-  int serverID;
+public class TreeQuorumClientMessageReceiver extends Thread{
   private ServerSocket serverSocket;
   private ObjectInputStream in;
   private ObjectOutputStream out;
@@ -22,8 +22,8 @@ public class TreeQuorumClientMessageReceiver {
   public void closeServer() {
     try {
       System.out.println("~~~~~~~~~~~~~~~~MESSAGES EXCHANGED~~~~~~~~~~~~~~~~");
-      System.out.println("Messages sent by this node: " );
-      System.out.println("Messages received by this node: ");
+      System.out.println("Messages sent by this node: " + TreeQuorumClient.messagesSent);
+      System.out.println("Messages received by this node: " + TreeQuorumClient.messagesRecvd);
       System.out.println("~~~~~~~~~~~~~~~~SHUTTING MYSELF DOWN~~~~~~~~~~~~~~~~");
       serverSocket.close();
     } catch (IOException e) {
@@ -39,8 +39,13 @@ public class TreeQuorumClientMessageReceiver {
     return 2*n;
   }
 
+  /**
+   * Recursive function to check if the current set of replies form a quorum or not.
+   * @param root root of the tree, s1
+   * @return True or false, depending on whether the set of replies form a quorum of not
+   */
   public boolean isQuorumFormed(int root) {
-    if (root > TreeQuorumClient.maxNodesAtServer/2) {
+    if (root > Math.ceil(TreeQuorumClient.maxNodesAtServer/2)) {
       if (TreeQuorumClient.locksReceived.get(root) == false) {
         return false;
       } else {
@@ -74,31 +79,32 @@ public class TreeQuorumClientMessageReceiver {
         // Read the requests by the clients
         try {
           Message m = (Message) in.readObject();
-          if (m.messageType.equals("LOCKED") && m.csCount == TreeQuorumClient.csCount) {
+          /**
+           * Keep track of the highest sequence number received from a reply. Use a higher timestamp for
+           * future requests.
+           */
+          TreeQuorumClient.highest_sequence_number = m.sequenceNumber;
+
+          if (m.messageType.equals("LOCKED") && m.csCount == TreeQuorumClient.csCount) { // If a lock has been granted
+            if (TreeQuorumClient.criticalSectionActivated == false) {
+              TreeQuorumClient.msgsCurrCS += 1;
+              TreeQuorumClient.messagesRecvd += 1;
+            }
             TreeQuorumClient.locksReceived.add(m.sender, true);
+
             //check if current set of replies forms a quorum
             if (isQuorumFormed(1)) {
               TreeQuorumClient.quorumFormed = true;
             }
-          } else if (m.messageType.equals("LOCKED") && m.csCount < TreeQuorumClient.csCount) {
-            TreeQuorumClient.clientCall(TreeQuorumClient.serverAddresses.get(m.sender),"RELINQUISH", m.sender, TreeQuorumClient.our_sequence_number, m.csCount);
-          } else if (m.messageType.equals("FAILED") && m.csCount == TreeQuorumClient.csCount) {
-            TreeQuorumClient.failsReceived.add(m.sender);
-            for (int fails : TreeQuorumClient.deferredInquiries) {
-              TreeQuorumClient.clientCall(TreeQuorumClient.serverAddresses.get(fails),"RELINQUISH", fails, TreeQuorumClient.our_sequence_number, TreeQuorumClient.csCount);
-            }
-          } else if (m.messageType.equals("INQUIRE") && m.csCount == TreeQuorumClient.csCount) {
-            if (TreeQuorumClient.failsReceived.size() > 0) {
-              TreeQuorumClient.clientCall(TreeQuorumClient.serverAddresses.get(m.sender),"RELINQUISH", m.sender, TreeQuorumClient.our_sequence_number, m.csCount);
-              TreeQuorumClient.locksReceived.remove(m.sender);
-            } else {
-              TreeQuorumClient.deferredInquiries.add(m.sender);
-            }
+
+          } else if (m.messageType.equals("LOCKED") && m.csCount < TreeQuorumClient.csCount) { // If a lock is granted later
+            TreeQuorumClient.clientCall(TreeQuorumClient.serverAddresses.get(m.sender), "RELEASE", m.sender,
+                TreeQuorumClient.our_sequence_number, m.csCount);
           }
         } catch (Exception e) {
-          e.printStackTrace();
+          server.close();
+          break;
         }
-
         server.close();
       }catch(SocketTimeoutException s)
       {
@@ -106,7 +112,6 @@ public class TreeQuorumClientMessageReceiver {
         break;
 
       } catch(IOException e) {
-        System.out.println("~~~~~~~Algorithm Ends~~~~~~");
         break;
       }
     }
